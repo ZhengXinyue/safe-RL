@@ -279,7 +279,7 @@ def main():
     agent = TD3(action_dim=int(env.action_space.shape[0]),
                 actor_learning_rate=0.0003,
                 critic_learning_rate=0.0003,
-                batch_size=64,
+                batch_size=128,
                 memory_size=1000000,
                 gamma=0.99,
                 tau=0.005,
