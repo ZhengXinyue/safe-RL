@@ -2,9 +2,9 @@ import random
 from collections import deque
 import time
 
+from safety_gym.envs.engine import Engine
 import gym
 import safety_gym
-from safety_gym.envs.engine import Engine
 import numpy as np
 import matplotlib.pyplot as plt
 
@@ -29,14 +29,12 @@ class MemoryBuffer:
     def sample(self, batch_size):
         assert len(self.buffer) > batch_size
         minibatch = random.sample(self.buffer, batch_size)
-        vision_batch = nd.array([data[0][0] for data in minibatch], ctx=self.ctx)
-        lidar_batch = nd.array([data[0][1] for data in minibatch], ctx=self.ctx)
+        state_batch = nd.array([data[0] for data in minibatch], ctx=self.ctx)
         action_batch = nd.array([data[1] for data in minibatch], ctx=self.ctx)
         reward_batch = nd.array([data[2] for data in minibatch], ctx=self.ctx)
-        next_vision_batch = nd.array([data[3][0] for data in minibatch], ctx=self.ctx)
-        next_lidar_batch = nd.array([data[3][1] for data in minibatch], ctx=self.ctx)
+        next_state_batch = nd.array([data[3] for data in minibatch], ctx=self.ctx)
         done = nd.array([data[4] for data in minibatch], ctx=self.ctx)
-        return vision_batch, lidar_batch, action_batch, reward_batch, next_vision_batch, next_lidar_batch, done
+        return state_batch, action_batch, reward_batch, next_state_batch, done
 
     def store_transition(self, state, action, reward, next_state, done):
         transition = (state, action, reward, next_state, done)
@@ -44,23 +42,19 @@ class MemoryBuffer:
 
 
 class Actor(nn.Block):
-    def __init__(self, action_dim):
+    def __init__(self, action_dim, action_bound):
         super(Actor, self).__init__()
         self.action_dim = action_dim
+        self.action_bound = action_bound
 
-        self.conv0 = nn.Conv2D(32, kernel_size=8, strides=4, padding=2, activation='relu')
-        self.conv1 = nn.Conv2D(64, kernel_size=4, strides=2, padding=1, activation='relu')
-        self.conv2 = nn.Conv2D(64, kernel_size=3, strides=1, padding=1, activation='relu')
+        self.dense0 = nn.Dense(400, activation='relu')
+        self.dense1 = nn.Dense(300, activation='relu')
+        self.dense2 = nn.Dense(self.action_dim, activation='tanh')
 
-        self.dense0 = nn.Dense(512, activation='relu')
-        self.dense1 = nn.Dense(256, activation='relu')
-        self.dense2 = nn.Dense(128, activation='relu')
-        self.dense3 = nn.Dense(self.action_dim, activation='tanh')
-
-    def forward(self, vision_state, lidar_state):
-        feature = self.conv2(self.conv1(self.conv0(vision_state))).flatten()
-        dense_input = nd.concat(feature, lidar_state, dim=1)
-        action = self.dense3(self.dense2(self.dense1(self.dense0(dense_input))))
+    def forward(self, state):
+        action = self.dense2(self.dense1(self.dense0(state)))
+        upper_bound = self.action_bound[:, 1]
+        action = action * upper_bound
         return action
 
 
@@ -68,25 +62,20 @@ class Critic(nn.Block):
     def __init__(self):
         super(Critic, self).__init__()
 
-        self.conv0 = nn.Conv2D(32, kernel_size=8, strides=4, padding=2, activation='relu')
-        self.conv1 = nn.Conv2D(64, kernel_size=4, strides=2, padding=1, activation='relu')
-        self.conv2 = nn.Conv2D(64, kernel_size=3, strides=1, padding=1, activation='relu')
+        self.dense0 = nn.Dense(400, activation='relu')
+        self.dense1 = nn.Dense(300, activation='relu')
+        self.dense2 = nn.Dense(1)
 
-        self.dense0 = nn.Dense(512, activation='relu')
-        self.dense1 = nn.Dense(256, activation='relu')
-        self.dense2 = nn.Dense(128, activation='relu')
-        self.dense3 = nn.Dense(1)
-
-    def forward(self, vision_state, lidar_state, action):
-        feature = self.conv2(self.conv1(self.conv0(vision_state))).flatten()
-        dense_input = nd.concat(feature, lidar_state, action, dim=1)
-        q_value = self.dense3(self.dense2(self.dense1(self.dense0(dense_input))))
+    def forward(self, state, action):
+        input = nd.concat(state, action, dim=1)
+        q_value = self.dense2(self.dense1(self.dense0(input)))
         return q_value
 
 
 class TD3:
     def __init__(self,
                  action_dim,
+                 action_bound,
                  actor_learning_rate,
                  critic_learning_rate,
                  batch_size,
@@ -100,6 +89,7 @@ class TD3:
                  noise_clip,
                  ctx):
         self.action_dim = action_dim
+        self.action_bound = nd.array(action_bound, ctx=ctx)
 
         self.actor_learning_rate = actor_learning_rate
         self.critic_learning_rate = critic_learning_rate
@@ -114,8 +104,8 @@ class TD3:
         self.noise_clip = noise_clip
         self.ctx = ctx
 
-        self.main_actor_network = Actor(action_dim)
-        self.target_actor_network = Actor(action_dim)
+        self.main_actor_network = Actor(action_dim, self.action_bound)
+        self.target_actor_network = Actor(action_dim, self.action_bound)
         self.main_critic_network1 = Critic()
         self.target_critic_network1 = Critic()
         self.main_critic_network2 = Critic()
@@ -144,9 +134,8 @@ class TD3:
         self.memory_buffer = MemoryBuffer(buffer_size=self.memory_size, ctx=ctx)
 
     def choose_action_train(self, state):
-        visual = nd.array([state[0]], ctx=self.ctx)
-        lidar = nd.array([state[1]], ctx=self.ctx).flatten()
-        action = self.main_actor_network(visual, lidar)
+        state = nd.array([state], ctx=self.ctx)
+        action = self.main_actor_network(state)
         # no noise clip
         noise = nd.normal(loc=0, scale=self.explore_noise, shape=action.shape, ctx=self.ctx)
         action += noise
@@ -154,13 +143,17 @@ class TD3:
         return clipped_action
 
     def choose_action_evaluate(self, state):
-        visual = nd.array([state[0]], ctx=self.ctx)
-        lidar = nd.array([state[1]], ctx=self.ctx).flatten()
-        action = self.main_actor_network(visual, lidar)
+        state = nd.array([state], ctx=self.ctx)
+        action = self.main_actor_network(state)
         return action
 
     def action_clip(self, action):
-        clipped_action = nd.clip(action, -1, 1)
+        if len(action[0]) == 2:
+            action0 = nd.clip(action[:, 0], float(self.action_bound[0][0].asnumpy()), float(self.action_bound[0][1].asnumpy()))
+            action1 = nd.clip(action[:, 1], float(self.action_bound[1][0].asnumpy()), float(self.action_bound[1][1].asnumpy()))
+            clipped_action = nd.concat(action0.reshape(-1, 1), action1.reshape(-1, 1))
+        else:
+            clipped_action = nd.clip(action, float(self.action_bound[0][0].asnumpy()), float(self.action_bound[0][1].asnumpy()))
         return clipped_action
 
     def soft_update(self, target_network, main_network):
@@ -174,13 +167,12 @@ class TD3:
 
     def update(self):
         self.total_train_steps += 1
-        vision_batch, lidar_batch, action_batch, reward_batch, \
-        next_vision_batch, next_lidar_batch, done_batch = self.memory_buffer.sample(self.batch_size)
+        state_batch, action_batch, reward_batch, next_state_batch, done_batch = self.memory_buffer.sample(self.batch_size)
 
         # --------------optimize the critic network--------------------
         with autograd.record():
             # choose next action according to target policy network
-            next_action_batch = self.target_actor_network(next_vision_batch, next_lidar_batch)
+            next_action_batch = self.target_actor_network(next_state_batch)
             noise = nd.normal(loc=0, scale=self.policy_noise, shape=next_action_batch.shape, ctx=self.ctx)
             # with noise clip
             noise = nd.clip(noise, a_min=-self.noise_clip, a_max=self.noise_clip)
@@ -188,32 +180,32 @@ class TD3:
             clipped_action = self.action_clip(next_action_batch)
 
             # get target q value
-            target_q_value1 = self.target_critic_network1(next_vision_batch, next_lidar_batch, clipped_action)
-            target_q_value2 = self.target_critic_network2(next_vision_batch, next_lidar_batch, clipped_action)
+            target_q_value1 = self.target_critic_network1(next_state_batch, clipped_action)
+            target_q_value2 = self.target_critic_network2(next_state_batch, clipped_action)
             target_q_value = nd.minimum(target_q_value1, target_q_value2).squeeze()
             target_q_value = reward_batch + (1.0 - done_batch) * (self.gamma * target_q_value)
 
             # get current q value
-            current_q_value1 = self.main_critic_network1(vision_batch, lidar_batch, action_batch)
-            current_q_value2 = self.main_critic_network2(vision_batch, lidar_batch, action_batch)
+            current_q_value1 = self.main_critic_network1(state_batch, action_batch)
+            current_q_value2 = self.main_critic_network2(state_batch, action_batch)
             loss = gloss.L2Loss()
 
             value_loss1 = loss(current_q_value1, target_q_value.detach())
             value_loss2 = loss(current_q_value2, target_q_value.detach())
 
         self.main_critic_network1.collect_params().zero_grad()
-        self.main_critic_network2.collect_params().zero_grad()
-
-        autograd.backward([value_loss1, value_loss2])
-
+        value_loss1.backward()
         self.critic1_optimizer.step(self.batch_size)
+
+        self.main_critic_network2.collect_params().zero_grad()
+        value_loss2.backward()
         self.critic2_optimizer.step(self.batch_size)
 
         # ---------------optimize the actor network-------------------------
         if self.total_train_steps % self.policy_update == 0:
             with autograd.record():
-                pred_action_batch = self.main_actor_network(vision_batch, lidar_batch)
-                actor_loss = -nd.mean(self.main_critic_network1(vision_batch, lidar_batch, pred_action_batch))
+                pred_action_batch = self.main_actor_network(state_batch)
+                actor_loss = -nd.mean(self.main_critic_network1(state_batch, pred_action_batch))
 
             self.main_actor_network.collect_params().zero_grad()
             actor_loss.backward()
@@ -223,88 +215,69 @@ class TD3:
             self.soft_update(self.target_critic_network1, self.main_critic_network1)
             self.soft_update(self.target_critic_network2, self.main_critic_network2)
 
-    def save(self, _time):
-        self.main_actor_network.save_parameters('%s/TD3_main_actor_network_at_steps_%d.params' % (_time, self.total_steps))
-        self.target_actor_network.save_parameters('%s/TD3_target_actor_network_at_steps_%d.params' % (_time, self.total_steps))
-        self.main_critic_network1.save_parameters('%s/TD3_main_critic_network_at_steps_%d.params' % (_time, self.total_steps))
-        self.main_critic_network2.save_parameters('%s/TD3_main_critic_network_at_steps_%d.params' % (_time, self.total_steps))
-        self.target_critic_network1.save_parameters('%s/TD3_target_critic_network_at_steps_%d.params' % (_time, self.total_steps))
-        self.target_critic_network2.save_parameters('%s/TD3_target_critic_network_at_steps_%d.params' % (_time, self.total_steps))
+    def save(self):
+        self.main_actor_network.save_parameters('TD3 HalfCheetah main actor network.params')
+        self.target_actor_network.save_parameters('TD3 HalfCheetah target actor network.params')
+        self.main_critic_network1.save_parameters('TD3 HalfCheetah main critic network.params')
+        self.main_critic_network2.save_parameters('TD3 HalfCheetah main critic network.params')
+        self.target_critic_network1.save_parameters('TD3 HalfCheetah target critic network.params')
+        self.target_critic_network2.save_parameters('TD3 HalfCheetah target critic network.params')
 
     def load(self):
-        self.main_actor_network.load_parameters('TD3_main_actor_network.params')
-        self.target_actor_network.load_parameters('TD3_target_actor_network.params')
-        self.main_critic_network1.load_parameters('TD3_main_critic_network.params')
-        self.main_critic_network2.load_parameters('TD3_main_critic_network.params')
-        self.target_critic_network1.load_parameters('TD3_target_critic_network.params')
-        self.target_critic_network2.load_parameters('TD3_target_critic_network.params')
+        self.main_actor_network.load_parameters('TD3 HalfCheetah main actor network.params')
+        self.target_actor_network.load_parameters('TD3 HalfCheetah target actor network.params')
+        self.main_critic_network1.load_parameters('TD3 HalfCheetah main critic network.params')
+        self.main_critic_network2.load_parameters('TD3 HalfCheetah main critic network.params')
+        self.target_critic_network1.load_parameters('TD3 HalfCheetah target critic network.params')
+        self.target_critic_network2.load_parameters('TD3 HalfCheetah target critic network.params')
 
 
 def main():
-    config = {
-        'num_steps': 2000,
-        'robot_base': 'xmls/car.xml',
-        'task': 'goal',
-        'placements_extents': [-4, -4, 4, 4],
-        'observation_flatten': False,
-        'sensors_obs': [],
-
-        'observe_goal_dist': True,
-        'observe_goal_comp': True,
-        'observe_goal_lidar': True,
-        'observe_pillars': True,
-        'observe_gremlins': True,
-        'observe_vision': True,
-
-        'constrain_pillars': True,
-        'constrain_gremlins': True,
-
-        'lidar_max_dist': 4,
-        'lidar_num_bins': 32,
-
-        'pillars_num': 10,
-        'gremlins_num': 2,
-    }
-    env = Engine(config)
-    seed = 234234
+    env = gym.make('Safexp-PointGoal1-v0')
+    seed = 345353
     env.seed(seed)
     mx.random.seed(seed)
     np.random.seed(seed)
     random.seed(seed)
     ctx = gb.try_gpu()
-    # ctx = mx.cpu()
-    max_episodes = 1000
+    ctx = mx.cpu()
+    max_episodes = 2000
     max_episode_steps = 1000
-    _time = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(time.time()))
+    env_action_bound = [[-1, 1], [-1, 1]]
+    config = {
+        'robot_base': 'xmls/car.xml',
+        'task': 'push',
+        'observe_goal_lidar': True,
+        'observe_box_lidar': True,
+        'constrain_hazards': True,
+        'lidar_max_dist': 3,
+        'lidar_num_bins': 16,
+    }
+
+    env = Engine(config)
     agent = TD3(action_dim=int(env.action_space.shape[0]),
-                actor_learning_rate=0.0003,
-                critic_learning_rate=0.0003,
-                batch_size=128,
-                memory_size=1000000,
+                action_bound=env_action_bound,
+                actor_learning_rate=0.001,
+                critic_learning_rate=0.001,
+                batch_size=64,
+                memory_size=100000,
                 gamma=0.99,
                 tau=0.005,
-                explore_steps=100,
+                explore_steps=1000,
                 policy_update=2,
                 policy_noise=0.2,
                 explore_noise=0.1,
                 noise_clip=0.5,
                 ctx=ctx)
-    name = ['goal_dist', 'goal_compass', 'goal_lidar', 'gremlins_lidar', 'pillars_lidar']
+
     episode_reward_list = []
-    # mode = input("train or test: ")
-    mode = 'train'
+    mode = input("train or test: ")
+
     if mode == 'train':
-        render = False
+        render = True
         for episode in range(max_episodes):
             episode_reward = 0
             state = env.reset()
-            # for n in name:
-                # print(type(state[n]))
-                # print(state[n].shape)
-            vision = state['vision'].transpose((2, 0, 1))
-            lidar = np.concatenate((state['goal_dist'], state['goal_compass'],
-                                    state['goal_lidar'], state['gremlins_lidar'], state['pillars_lidar']), axis=0)
-            state = [vision, lidar]
             for step in range(max_episode_steps):
                 if render:
                     env.render()
@@ -316,31 +289,14 @@ def main():
                     action = action.asnumpy()
                     agent.total_steps += 1
                 next_state, reward, done, info = env.step(action)
-                next_vision = next_state['vision'].transpose((2, 0, 1))
-                next_lidar = np.concatenate((next_state['goal_dist'], next_state['goal_compass'],
-                                             next_state['goal_lidar'], next_state['gremlins_lidar'],
-                                             next_state['pillars_lidar']), axis=0)
-                state = [next_vision, next_lidar]
-                next_state = [vision, lidar]
-                if agent.total_steps % 10000 == 0:
-                    agent.save(_time)
-                if 1 in info.values():
-                    reward -= 1
-                    done = True
-                else:
-                    if done:
-                        print('get the goal point.')
-                        reward += 1
-                    else:
-                        pass
                 agent.memory_buffer.store_transition(state, action, reward, next_state, done)
                 episode_reward += reward
                 state = next_state
-                if agent.total_steps > agent.explore_steps:
+                if agent.total_steps >= agent.explore_steps:
                     agent.update()
                 if done:
                     break
-            print('episode %d ends with reward %f ' % (episode, episode_reward))
+            print('episode  %d  reward  %f  total steps:  %d' % (episode, episode_reward, agent.total_steps))
             episode_reward_list.append(episode_reward)
         agent.save()
 
@@ -361,17 +317,18 @@ def main():
                 state = next_state
                 if done:
                     break
-            print('episode %d ends with reward %f ' % (episode, episode_reward))
+            print('episode  %d  reward  %f  total steps:  %d' % (episode, episode_reward, agent.total_steps))
             episode_reward_list.append(episode_reward)
     else:
         raise NameError('Wrong input')
+
     env.close()
     plt.plot(episode_reward_list)
     plt.xlabel('episode')
     plt.ylabel('reward')
-    plt.title('TD3 reward')
+    plt.title('TD3 HalfCheetah-v2')
     if mode == 'train':
-        plt.savefig('./TD3_reward')
+        plt.savefig('./HalfCheetah_v2')
     plt.show()
 
 
