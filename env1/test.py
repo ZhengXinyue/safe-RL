@@ -223,13 +223,13 @@ class TD3:
             self.soft_update(self.target_critic_network1, self.main_critic_network1)
             self.soft_update(self.target_critic_network2, self.main_critic_network2)
 
-    def save(self):
-        self.main_actor_network.save_parameters('TD3_main_actor_network.params')
-        self.target_actor_network.save_parameters('TD3_target_actor_network.params')
-        self.main_critic_network1.save_parameters('TD3_main_critic_network.params')
-        self.main_critic_network2.save_parameters('TD3_main_critic_network.params')
-        self.target_critic_network1.save_parameters('TD3_target_critic_network.params')
-        self.target_critic_network2.save_parameters('TD3_target_critic_network.params')
+    def save(self, _time):
+        self.main_actor_network.save_parameters('%s/TD3_main_actor_network_at_steps_%d.params' % (_time, self.total_steps))
+        self.target_actor_network.save_parameters('%s/TD3_target_actor_network_at_steps_%d.params' % (_time, self.total_steps))
+        self.main_critic_network1.save_parameters('%s/TD3_main_critic_network_at_steps_%d.params' % (_time, self.total_steps))
+        self.main_critic_network2.save_parameters('%s/TD3_main_critic_network_at_steps_%d.params' % (_time, self.total_steps))
+        self.target_critic_network1.save_parameters('%s/TD3_target_critic_network_at_steps_%d.params' % (_time, self.total_steps))
+        self.target_critic_network2.save_parameters('%s/TD3_target_critic_network_at_steps_%d.params' % (_time, self.total_steps))
 
     def load(self):
         self.main_actor_network.load_parameters('TD3_main_actor_network.params')
@@ -275,7 +275,7 @@ def main():
     # ctx = mx.cpu()
     max_episodes = 1000
     max_episode_steps = 1000
-
+    _time = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(time.time()))
     agent = TD3(action_dim=int(env.action_space.shape[0]),
                 actor_learning_rate=0.0003,
                 critic_learning_rate=0.0003,
@@ -294,7 +294,7 @@ def main():
     mode = input("train or test: ")
 
     if mode == 'train':
-        render = True
+        render = False
         for episode in range(max_episodes):
             episode_reward = 0
             state = env.reset()
@@ -322,6 +322,8 @@ def main():
                                              next_state['pillars_lidar']), axis=0)
                 state = [next_vision, next_lidar]
                 next_state = [vision, lidar]
+                if agent.total_steps % 10000 == 0:
+                    agent.save(_time)
                 if 1 in info.values():
                     reward -= 1
                     done = True
