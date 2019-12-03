@@ -239,19 +239,19 @@ def main():
         'num_steps': 2000,
         'robot_base': 'xmls/car.xml',
         'task': 'goal',
-        'placements_extents': [-1, -1, 1, 1],
+        'placements_extents': [-4, -4, 4, 4],
         'observation_flatten': False,
-        'sensors_obs': [],
 
+        'observe_goal_lidar': True,
         'observe_goal_comp': True,
         'observe_pillars': True,
 
         'constrain_pillars': True,
 
         'lidar_max_dist': 8,
-        'lidar_num_bins': 10,
+        'lidar_num_bins': 120,
 
-        'pillars_num': 1,
+        'pillars_num': 10,
     }
     env = Engine(config)
     seed = 2342221
@@ -262,7 +262,7 @@ def main():
     ctx = gb.try_gpu()
     ctx = mx.cpu()
     max_episodes = 1000
-    max_episode_steps = 100
+    max_episode_steps = 1000
     _time = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(time.time()))
     agent = TD3(action_dim=int(env.action_space.shape[0]),
                 actor_learning_rate=0.001,
@@ -282,12 +282,12 @@ def main():
     # mode = input("train or test: ")
     mode = 'train'
     if mode == 'train':
-        os.mkdir('%s' % _time)
+        # os.mkdir('%s' % _time)
         render = True
         for episode in range(max_episodes):
             episode_reward = 0
             state = env.reset()
-            lidar = np.concatenate((state['goal_compass'], state['pillars_lidar'],
+            lidar = np.concatenate((state['goal_compass'], state['pillars_lidar'], state['goal_lidar'],
                                     state['goal_position'], state['robot_position']), axis=0)
             state = [lidar]
             for step in range(max_episode_steps):
@@ -301,7 +301,7 @@ def main():
                     action = action.copyto(mx.cpu()).asnumpy()
                     agent.total_steps += 1
                 next_state, reward, done, info = env.step(action)
-                next_lidar = np.concatenate((next_state['goal_compass'], next_state['pillars_lidar'],
+                next_lidar = np.concatenate((next_state['goal_compass'], next_state['pillars_lidar'], next_state['goal_lidar'],
                                              next_state['goal_position'], next_state['robot_position']), axis=0)
                 next_state = [next_lidar]
                 if agent.total_steps % 10000 == 0:
