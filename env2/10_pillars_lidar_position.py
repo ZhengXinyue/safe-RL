@@ -260,7 +260,7 @@ def main():
     np.random.seed(seed)
     random.seed(seed)
     ctx = gb.try_gpu()
-    ctx = mx.cpu()
+    # ctx = mx.cpu()
     max_episodes = 1000
     max_episode_steps = 1000
     _time = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(time.time()))
@@ -279,16 +279,17 @@ def main():
                 ctx=ctx)
 
     episode_reward_list = []
-    # mode = input("train or test: ")
-    mode = 'train'
+    mode = input("train or test: ")
+    # mode = 'train'
     if mode == 'train':
-        # os.mkdir('%s' % _time)
-        render = True
-        for episode in range(max_episodes):
+        os.mkdir('%s' % _time)
+        render = False
+        episode = 0
+        while agent.total_steps < 1000000:
+            episode += 1
             episode_reward = 0
             state = env.reset()
-            lidar = np.concatenate((state['goal_compass'], state['pillars_lidar'], state['goal_lidar'],
-                                    state['goal_position'], state['robot_position']), axis=0)
+            lidar = np.concatenate((state['goal_compass'], state['pillars_lidar'], state['goal_lidar']), axis=0)
             state = [lidar]
             for step in range(max_episode_steps):
                 if render:
@@ -301,13 +302,12 @@ def main():
                     action = action.copyto(mx.cpu()).asnumpy()
                     agent.total_steps += 1
                 next_state, reward, done, info = env.step(action)
-                next_lidar = np.concatenate((next_state['goal_compass'], next_state['pillars_lidar'], next_state['goal_lidar'],
-                                             next_state['goal_position'], next_state['robot_position']), axis=0)
+                next_lidar = np.concatenate((next_state['goal_compass'], next_state['pillars_lidar'], next_state['goal_lidar']), axis=0)
                 next_state = [next_lidar]
-                if agent.total_steps % 10000 == 0:
+                if agent.total_steps % 20000 == 0:
                     agent.save(_time)
                 if info['cost_pillars'] != 0:
-                    reward -= 1
+                    reward -= 2
                     done = True
                 if 'goal_met' in info.keys():
                     reward += 1
@@ -322,33 +322,31 @@ def main():
             episode_reward_list.append(episode_reward)
 
     elif mode == 'test':
-        t = '2019-12-02 10:59:40'
-        steps = 100000
-        agent.load(t, steps)
+        max_episode_steps = 100000
+        t = '2019-12-03 18:56:02'
+        s = 350000
         render = True
+        agent.load(t, s)
         for episode in range(max_episodes):
             episode_reward = 0
             state = env.reset()
-            lidar = np.concatenate((state['goal_compass'], state['pillars_lidar'],
-                                    state['goal_position'], state['robot_position']), axis=0)
+            lidar = np.concatenate((state['goal_compass'], state['pillars_lidar'], state['goal_lidar']), axis=0)
             state = [lidar]
             for step in range(max_episode_steps):
                 if render:
                     env.render()
-                if agent.total_steps < agent.explore_steps:
-                    action = env.action_space.sample()
-                    agent.total_steps += 1
-                else:
-                    action = agent.choose_action_train(state)
-                    action = action.copyto(mx.cpu()).asnumpy()
-                    agent.total_steps += 1
+                action = agent.choose_action_train(state)
+                action = action.copyto(mx.cpu()).asnumpy()
+                agent.total_steps += 1
                 next_state, reward, done, info = env.step(action)
-                next_lidar = np.concatenate((next_state['goal_compass'], next_state['pillars_lidar'],
-                                             next_state['goal_position'], next_state['robot_position']), axis=0)
+                next_lidar = np.concatenate(
+                    (next_state['goal_compass'], next_state['pillars_lidar'], next_state['goal_lidar']), axis=0)
                 next_state = [next_lidar]
-                if 1 in info.values():
+                if info['cost_pillars'] != 0:
                     reward -= 1
                     done = True
+                if 'goal_met' in info.keys():
+                    reward += 1
                 episode_reward += reward
                 state = next_state
                 if done:
@@ -363,7 +361,7 @@ def main():
     plt.ylabel('reward')
     plt.title('TD3 reward')
     if mode == 'train':
-        plt.savefig('./TD3_reward')
+        plt.savefig('%s/TD3_reward' % _time)
     plt.show()
 
 
