@@ -323,8 +323,8 @@ def main():
 
     elif mode == 'test':
         max_episode_steps = 100000
-        t = '2019-12-03 18:56:02'
-        s = 350000
+        t = '2019-12-04 17:14:09'
+        s = 600000
         render = True
         agent.load(t, s)
         for episode in range(max_episodes):
