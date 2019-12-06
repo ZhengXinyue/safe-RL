@@ -1,0 +1,94 @@
+key feature:
+	pillars reward -= 2
+
+problem:
+    keep away from the pillars
+    stuck
+
+
+512 256 128
+config = {
+        'num_steps': 2000,
+        'robot_base': 'xmls/car.xml',
+        'task': 'goal',
+        'placements_extents': [-4, -4, 4, 4],
+        'observation_flatten': False,
+
+        'observe_goal_lidar': True,
+        'observe_goal_comp': True,
+        'observe_pillars': True,
+
+        'constrain_pillars': True,
+
+        'lidar_max_dist': 8,
+        'lidar_num_bins': 120,
+
+        'pillars_num': 10,
+    }
+    env = Engine(config)
+    seed = 2342221
+    env.seed(seed)
+    mx.random.seed(seed)
+    np.random.seed(seed)
+    random.seed(seed)
+    ctx = gb.try_gpu()
+    # ctx = mx.cpu()
+    max_episodes = 1000
+    max_episode_steps = 1000
+    _time = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(time.time()))
+    agent = TD3(action_dim=int(env.action_space.shape[0]),
+                actor_learning_rate=0.001,
+                critic_learning_rate=0.001,
+                batch_size=64,
+                memory_size=1000000,
+                gamma=0.99,
+                tau=0.005,
+                explore_steps=1000,
+                policy_update=2,
+                policy_noise=0.2,
+                explore_noise=0.1,
+                noise_clip=0.5,
+                ctx=ctx)
+
+    episode_reward_list = []
+    mode = input("train or test: ")
+    # mode = 'train'
+    if mode == 'train':
+        os.mkdir('%s' % _time)
+        render = False
+        episode = 0
+        while agent.total_steps < 1000000:
+            episode += 1
+            episode_reward = 0
+            state = env.reset()
+            lidar = np.concatenate((state['goal_compass'], state['pillars_lidar'], state['goal_lidar']), axis=0)
+            state = [lidar]
+            for step in range(max_episode_steps):
+                if render:
+                    env.render()
+                if agent.total_steps < agent.explore_steps:
+                    action = env.action_space.sample()
+                    agent.total_steps += 1
+                else:
+                    action = agent.choose_action_train(state)
+                    action = action.copyto(mx.cpu()).asnumpy()
+                    agent.total_steps += 1
+                next_state, reward, done, info = env.step(action)
+                next_lidar = np.concatenate((next_state['goal_compass'], next_state['pillars_lidar'], next_state['goal_lidar']), axis=0)
+                next_state = [next_lidar]
+                if agent.total_steps % 20000 == 0:
+                    agent.save(_time)
+                if info['cost_pillars'] != 0:
+                    reward -= 2
+                    done = True
+                if 'goal_met' in info.keys():
+                    reward += 1
+                agent.memory_buffer.store_transition(state, action, reward, next_state, done)
+                episode_reward += reward
+                state = next_state
+                if agent.total_steps > agent.explore_steps:
+                    agent.update()
+                if done:
+                    break
+            print('episode %d ends with reward %f at steps %d' % (episode, episode_reward, agent.total_steps))
+            episode_reward_list.append(episode_reward)
