@@ -1,6 +1,7 @@
 import random
 from collections import deque
 import time
+import random
 import os
 
 import gym
@@ -234,12 +235,34 @@ class TD3:
         self.target_critic_network2.load_parameters('%s/TD3_target_critic_network2_at_steps_%d.params' % (_time, steps))
 
 
-def main():
+def plot(result):
+    l = []
+    for i in range(0, len(l)-100, 20):
+        l.append(sum(result[i:i+100]) / 100)
+    return l
+
+
+def f():
+    flag = False
+    while not flag:
+        flag = True
+        m = np.random.uniform(-4, 4, size=(10, 2))
+        for i in range(len(m)):
+            for j in range(i+1, len(m)):
+                if np.sqrt(np.sum(np.square(m[i] - m[j]))) < 0.6:
+                    flag = False
+    l = []
+    for i in m:
+        l.append(list(i))
+    return l
+
+
+def main(t):
     config = {
         'num_steps': 2000,
         'robot_base': 'xmls/car.xml',
         'task': 'goal',
-        'placements_extents': [-1, -1, 1, 1],
+        'placements_extents': [-4, -4, 4, 4],
         'observation_flatten': False,
 
         'observe_goal_lidar': True,
@@ -249,20 +272,33 @@ def main():
         'constrain_pillars': True,
 
         'lidar_max_dist': 8,
-        'lidar_num_bins': 20,
+        'lidar_num_bins': 120,
 
-        'pillars_num': 1,
+        'pillars_num': 10,
+        'pillars_locations': [[ 3.52087172, -3.29627743],
+       [-3.60993032,  3.76972334],
+       [ 0.40512185, -1.11828606],
+       [-2.41838798,  0.82712593],
+       [-3.68081797, -2.80101914],
+       [ 1.32806649, -1.6491154 ],
+       [-1.33992617,  2.2909115 ],
+       [ 1.05154836,  2.05283816],
+       [-1.4235473 , -1.75820755],
+       [-2.50183935,  3.20091906],
+       ]  # Fixed locations to override placements
     }
+    more = [[ 2.70332502, -3.25504762],
+       [ 2.96986056,  1.00503341],
+       [-2.49524046, -2.46034225],
+       [ 2.54666258,  2.0769036 ],
+       [-1.69868949,  3.89464402]]
     env = Engine(config)
-    seed = 2342221
     env.seed(seed)
     mx.random.seed(seed)
     np.random.seed(seed)
     random.seed(seed)
     ctx = gb.try_gpu()
     ctx = mx.cpu()
-    max_episodes = 1000
-    max_episode_steps = 500
     _time = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(time.time()))
     agent = TD3(action_dim=int(env.action_space.shape[0]),
                 actor_learning_rate=0.0005,
@@ -271,65 +307,56 @@ def main():
                 memory_size=1000000,
                 gamma=0.99,
                 tau=0.005,
-                explore_steps=100000,
+                explore_steps=10000,
                 policy_update=2,
                 policy_noise=0.2,
                 explore_noise=0.1,
                 noise_clip=0.5,
                 ctx=ctx)
 
-    episode_reward_list = []
-    mode = 'train'
-    if mode == 'train':
-        render = True
-        episode = 0
-        while agent.total_steps < 500002:
-            episode += 1
-            episode_reward = 0
+    success_rate_list = []
+    max_episode_steps = 1000
+    render = False
+    s = 20000
+    agent.load(t, s)
+    while True:
+        if s > 500000:
+            break
+        agent.load(t, s)
+        s += 20000
+        success_list = []
+        for i in range(100):
+            flag = False
             state = env.reset()
             lidar = np.concatenate((state['goal_compass'], state['pillars_lidar'], state['goal_lidar']), axis=0)
             state = [lidar]
             for step in range(max_episode_steps):
-                if render:
-                    env.render()
-                if agent.total_steps < agent.explore_steps:
-                    action = env.action_space.sample()
-                    agent.total_steps += 1
-                else:
-                    action = agent.choose_action_train(state)
-                    action = action.copyto(mx.cpu()).asnumpy()
-                    agent.total_steps += 1
+                action = agent.choose_action_train(state).asnumpy()
                 next_state, reward, done, info = env.step(action)
-                next_lidar = np.concatenate((next_state['goal_compass'], next_state['pillars_lidar'], next_state['goal_lidar']), axis=0)
+                next_lidar = np.concatenate(
+                    (next_state['goal_compass'], next_state['pillars_lidar'], next_state['goal_lidar']), axis=0)
                 next_state = [next_lidar]
-                # print(next_state[0].shape)     (42,)
-                # if agent.total_steps % 20000 == 0:
-                    # agent.save(_time)
                 if info['cost_pillars'] != 0:
-                    reward -= 1
                     done = True
                 if 'goal_met' in info.keys():
-                    reward += 1
-                agent.memory_buffer.store_transition(state, action, reward, next_state, done)
-                episode_reward += reward
+                    flag = True
+                    done = True
                 state = next_state
-                if agent.total_steps > agent.explore_steps:
-                    agent.update()
                 if done:
                     break
-            print('episode %d ends with reward %f at steps %d' % (episode, episode_reward, agent.total_steps))
-            episode_reward_list.append(episode_reward)
-    else:
-            print('Wrong input')
-    env.close()
-    plt.plot(episode_reward_list)
-    plt.xlabel('episode')
-    plt.ylabel('reward')
-    plt.title('TD3 reward')
-    if mode == 'train':
-        plt.savefig('%s/TD3_reward' % _time)
-    plt.show()
+            if not flag:
+                success_list.append(0)
+            if flag:
+                success_list.append(1)
+        success_rate_list.append(sum(success_list) / 100)
+    print(success_rate_list)
+    with open('test_result.txt', 'a+') as f:
+        f.write('\n' + t + '\n')
+        f.write('success rate:  ' + str(success_rate_list) + '\n')
 
 
 if __name__ == '__main__':
-    main()
+    seed = 77777
+    t = ['2019-12-06 10:36:12']
+    for i in t:
+        main(i)

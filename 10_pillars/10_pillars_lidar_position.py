@@ -294,7 +294,6 @@ def main():
         os.mkdir('%s' % _time)
         render = False
         episode = 0
-        success_list = []
         while agent.total_steps < 1000002:
             episode += 1
             state = env.reset()
@@ -330,12 +329,9 @@ def main():
                 if done:
                     break
             if not flag:
-                success_list.append(0)
                 print('episode %d fails at steps %d' % (episode, agent.total_steps))
             if flag:
-                success_list.append(1)
                 print('episode %d succeeds at steps %d' % (episode, agent.total_steps))
-        print(success_list)
 
     elif mode == 'test':
         max_episode_steps = 100000
